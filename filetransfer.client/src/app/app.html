@@ -1,0 +1,25 @@
+<div class="upload-dashboard">
+  <h1>Configurable Resumable Chunked Transfer</h1>
+
+  <div class="config-panel" style="margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; display: flex; gap: 15px;">
+    <label>
+      <strong>Chunk Sizing (MB):</strong>
+      <input type="number" [(ngModel)]="chunkSizeMB" [disabled]="isUploading" min="1" max="100" style="width: 60px;" />
+    </label>
+    <label>
+      <strong>Stream Concurrency Limit:</strong>
+      <input type="number" [(ngModel)]="maxParallelChunks" [disabled]="isUploading" min="1" max="16" style="width: 50px;" />
+    </label>
+  </div>
+
+  <div class="form-group">
+    <input type="file" multiple (change)="onFileSelected($event)" [disabled]="isUploading" />
+    <button [disabled]="selectedFiles.length === 0 || isUploading" (click)="onUpload()">
+      {{ isUploading ? 'Uploading Bundle...' : 'Start Resilient Transfer' }}
+    </button>
+  </div>
+
+  <div class="status-box" *ngIf="uploadStatus">
+    <p><strong>System Metric logs:</strong> <em>{{ uploadStatus }}</em></p>
+  </div>
+</div>

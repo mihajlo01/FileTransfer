@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+  </Folder>
+  <Project Path="filetransfer.client/filetransfer.client.esproj">
+    <Build />
+    <Deploy />
+  </Project>
+  <Project Path="FileTransfer.Local/FileTransfer.Local.Client.csproj" />
+  <Project Path="FileTransfer.Models/FileTransfer.Models.csproj" />
+  <Project Path="FileTransfer.Server/FileTransfer.Server.csproj" />
+</Solution>
