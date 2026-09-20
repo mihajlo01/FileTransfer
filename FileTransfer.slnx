@@ -8,5 +8,6 @@
   </Project>
   <Project Path="FileTransfer.Local/FileTransfer.Local.Client.csproj" />
   <Project Path="FileTransfer.Models/FileTransfer.Models.csproj" />
+  <Project Path="FileTransfer.Server.Tests/FileTransfer.Server.Tests.csproj" />
   <Project Path="FileTransfer.Server/FileTransfer.Server.csproj" />
 </Solution>

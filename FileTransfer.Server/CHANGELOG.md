@@ -16,3 +16,6 @@ The following steps were used to generate this project:
 - Comparison and adaptation of the initial version to the FileTransfer application requirements
 - Models expansion
 - Finalization
+- Testiing and confirmations
+- Unit Tests
+- Final solution
