@@ -1,42 +1,30 @@
-﻿namespace FileTransfer.Local
+﻿using FileTransfer.Local;
+
+namespace FileTransfer.ConsoleApp
 {
     class Program
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("=== Resilient Configurable Local Console Client ===");
+            Console.WriteLine("=== Resumable Chunked Segment Hashing File Engine ===");
 
-            string sourceDirectory = @"C:\YourSourceFolder";
+            Console.Write("Enter source file path (e.g. C:\\source\\large_file.bin): ");
+            string sourceFilePath = Console.ReadLine()?.Trim() ?? "";
+
+            if (!File.Exists(sourceFilePath))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[Error] Source file path could not be discovered.");
+                Console.ResetColor();
+                return;
+            }
+
+            Console.Write("Enter destination path (e.g. D:\\destination\\): ");
+            string destinationFolderPath = Console.ReadLine()?.Trim() ?? "";
+
+            int chunkSize = 2 * 1024 * 1024;
+            int maxConcurrencyStreams = 4;
             string serverBaseUrl = "http://localhost:5092";
-            int configuredChunkSizeMB = 8;
-            int maxRetriesCount = 3;
-
-            for (int i = 0; i < args.Length; i++)
-            {
-                if (args[i].Equals("-folder", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
-                    sourceDirectory = args[i + 1];
-                if (args[i].Equals("-size", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
-                    int.TryParse(args[i + 1], out configuredChunkSizeMB);
-                if (args[i].Equals("-retries", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
-                    int.TryParse(args[i + 1], out maxRetriesCount);
-            }
-
-            int absoluteChunkSizeBytes = configuredChunkSizeMB * 1024 * 1024;
-
-            if (!Directory.Exists(sourceDirectory))
-            {
-                Console.WriteLine($"[Error] Source folder directory path could not be resolved: '{sourceDirectory}'");
-                return;
-            }
-
-            string[] selectedFiles = Directory.GetFiles(sourceDirectory);
-            if (selectedFiles.Length == 0)
-            {
-                Console.WriteLine($"[Warning] No files discovered inside tracking target route folder: '{sourceDirectory}'");
-                return;
-            }
-
-            Console.WriteLine($"[Config] Slicing chunks at: {configuredChunkSizeMB} MB | Max Retries: {maxRetriesCount}");
 
             var handler = new HttpClientHandler
             {
@@ -45,31 +33,29 @@
 
             using (var httpClient = new HttpClient(handler))
             {
-                httpClient.Timeout = TimeSpan.FromMinutes(30);
+                httpClient.Timeout = TimeSpan.FromMinutes(60);
                 var transferEngine = new LocalFileTransfer();
 
                 try
                 {
-                    await transferEngine.UploadFilesAsync(
+                    await transferEngine.UploadFilesWithVerificationAsync(
                         httpClient: httpClient,
                         apiBase: serverBaseUrl,
-                        paths: selectedFiles,
-                        chunkSize: absoluteChunkSizeBytes,
-                        maxParallel: 4,
-                        maxRetries: maxRetriesCount
+                        sourceFile: sourceFilePath,
+                        destinationDir: destinationFolderPath,
+                        chunkSize: chunkSize,
+                        maxParallel: maxConcurrencyStreams
                     );
-
-                    Console.WriteLine("\n[Success] Local batch operation finished successfully!");
                 }
                 catch (Exception ex)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"\n[Critical Error] Session broke: {ex.Message}");
+                    Console.WriteLine($"\n[Critical Session Crash] Error: {ex.Message}");
                     Console.ResetColor();
                 }
             }
 
-            Console.WriteLine("Press any key to close...");
+            Console.WriteLine("\nExecution cycle finished. Press any key to exit terms...");
             Console.ReadKey();
         }
     }

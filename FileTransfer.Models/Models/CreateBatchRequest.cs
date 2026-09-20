@@ -2,6 +2,7 @@
 {
     public class CreateBatchRequest
     {
-        public List<CreateFileRequest> Files { get; set; }
+        public string DestinationFolder { get; set; } = string.Empty;
+        public List<CreateFileRequest> Files { get; set; } = new();
     }
 }

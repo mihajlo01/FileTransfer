@@ -15,7 +15,7 @@ namespace FileTransfer.Server.BusinessLogic.Services
             public Guid FieldId { get; set; }
             public string FileName { get; set; } = string.Empty;
             public int ChunkCount { get; set; }
-            public string ExpectedMd5Hex { get; set; } = string.Empty;
+            public string DestinationFolder { get; set; } = string.Empty;
         }
 
         private static readonly ConcurrentDictionary<Guid, List<CachedFileMetadata>> _batchFilesMetadata = new();
@@ -25,14 +25,9 @@ namespace FileTransfer.Server.BusinessLogic.Services
             var partPath = GetPartPath(fileId, chunkIndex);
             var tmp = $"{partPath}.tmp";
 
-            var directory = Path.GetDirectoryName(partPath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
+            Directory.CreateDirectory(Path.GetDirectoryName(partPath)!);
 
             byte[] actual;
-
             using (var md5 = MD5.Create())
             using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, true))
             {
@@ -50,6 +45,9 @@ namespace FileTransfer.Server.BusinessLogic.Services
             if (!actual.SequenceEqual(expectedMd5))
             {
                 if (File.Exists(tmp)) File.Delete(tmp);
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[Server Error] MD5 mismatch detected for chunk {chunkIndex}. Requesting re-submission.");
+                Console.ResetColor();
                 return false;
             }
 
@@ -72,7 +70,6 @@ namespace FileTransfer.Server.BusinessLogic.Services
                 if (chunkCount == 0) chunkCount = 1;
 
                 var fieldId = Guid.NewGuid();
-
                 filesToUpload.Add(new FileUploadInfo
                 {
                     FieldId = fieldId,
@@ -86,62 +83,37 @@ namespace FileTransfer.Server.BusinessLogic.Services
                     FieldId = fieldId,
                     FileName = fileRequest.FileName,
                     ChunkCount = chunkCount,
-                    ExpectedMd5Hex = fileRequest.Md5Hex?.ToLowerInvariant().Trim() ?? string.Empty
+                    DestinationFolder = request.DestinationFolder
                 });
             }
 
-            var response = new CreateBatchResponse
-            {
-                BatchId = batchId,
-                Files = filesToUpload
-            };
-
             _batchFilesMetadata[batchId] = cachedMetadata;
+            _batchStore[batchId] = new BatchStatusResponse { BatchId = batchId, Status = "Initialized", TotalFiles = filesToUpload.Count };
 
-            _batchStore[batchId] = new BatchStatusResponse
-            {
-                BatchId = batchId,
-                Status = "Initialized",
-                TotalFiles = filesToUpload.Count
-            };
-
-            return response;
+            return new CreateBatchResponse { BatchId = batchId, Files = filesToUpload };
         }
 
-        public BatchStatusResponse GetStatus(Guid batchId)
-        {
-            if (_batchStore.TryGetValue(batchId, out var status))
-            {
-                return status;
-            }
-
-            return new BatchStatusResponse { BatchId = batchId, Status = "NotFound" };
-        }
+        public BatchStatusResponse GetStatus(Guid batchId) =>
+            _batchStore.TryGetValue(batchId, out var status) ? status : new BatchStatusResponse { BatchId = batchId, Status = "NotFound" };
 
         public async Task<CompleteBatchResult> CompleteAsync(Guid batchId)
         {
             if (!_batchStore.TryGetValue(batchId, out var status) || !_batchFilesMetadata.TryGetValue(batchId, out var filesMetadata))
             {
-                return new CompleteBatchResult { Success = false, Error = "Batch session identifier or metadata configuration not found." };
+                return new CompleteBatchResult { Success = false, Error = "Batch session identifier or metadata not found." };
             }
-
-            var targetStorageDirectory = Path.Combine(Directory.GetCurrentDirectory(), "CompletedUploads");
-            Directory.CreateDirectory(targetStorageDirectory);
 
             try
             {
                 foreach (var fileInfo in filesMetadata)
                 {
-                    if (!_receivedChunks.TryGetValue(fileInfo.FieldId, out var chunkList) || chunkList.Count < fileInfo.ChunkCount)
-                    {
-                        return new CompleteBatchResult
-                        {
-                            Success = false,
-                            Error = $"Cannot assemble '{fileInfo.FileName}'. Missing chunks. Received {chunkList?.Count ?? 0}/{fileInfo.ChunkCount}."
-                        };
-                    }
+                    var targetFolder = string.IsNullOrWhiteSpace(fileInfo.DestinationFolder)
+                        ? Path.Combine(Directory.GetCurrentDirectory(), "CompletedUploads")
+                        : fileInfo.DestinationFolder;
 
-                    var finalFilePath = Path.Combine(targetStorageDirectory, fileInfo.FileName);
+                    Directory.CreateDirectory(targetFolder);
+                    var finalFilePath = Path.Combine(targetFolder, fileInfo.FileName);
+
                     if (File.Exists(finalFilePath)) File.Delete(finalFilePath);
 
                     using (var finalFileStream = new FileStream(finalFilePath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, true))
@@ -149,12 +121,6 @@ namespace FileTransfer.Server.BusinessLogic.Services
                         for (int chunkIndex = 0; chunkIndex < fileInfo.ChunkCount; chunkIndex++)
                         {
                             var partPath = GetPartPath(fileInfo.FieldId, chunkIndex);
-
-                            if (!File.Exists(partPath))
-                            {
-                                return new CompleteBatchResult { Success = false, Error = $"Chunk fragment file missing during sequential layout lookup: index {chunkIndex}" };
-                            }
-
                             using (var partStream = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read))
                             {
                                 await partStream.CopyToAsync(finalFileStream);
@@ -162,38 +128,22 @@ namespace FileTransfer.Server.BusinessLogic.Services
                         }
                     }
 
-                    string actualFileMd5Hex;
-                    using (var md5Evaluator = MD5.Create())
-                    using (var assembledFileReadStream = new FileStream(finalFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, true))
+                    string finalSha256;
+                    using (var shaEvaluator = SHA256.Create())
+                    using (var assembledReader = new FileStream(finalFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, true))
                     {
-                        var rawHashBytes = await md5Evaluator.ComputeHashAsync(assembledFileReadStream);
-                        actualFileMd5Hex = BitConverter.ToString(rawHashBytes).Replace("-", "").ToLowerInvariant();
-                    }
-
-                    if (actualFileMd5Hex != fileInfo.ExpectedMd5Hex)
-                    {
-                        if (File.Exists(finalFilePath)) File.Delete(finalFilePath);
-
-                        return new CompleteBatchResult
-                        {
-                            Success = false,
-                            Error = $"Security Verification Failed! Master MD5 mismatch on file '{fileInfo.FileName}'. Assembled hash does not match original signature registry client metrics."
-                        };
+                        var rawBytes = await shaEvaluator.ComputeHashAsync(assembledReader);
+                        finalSha256 = BitConverter.ToString(rawBytes).Replace("-", "").ToLowerInvariant();
                     }
 
                     var chunkDirectoryPath = Path.Combine(Directory.GetCurrentDirectory(), "Uploads", fileInfo.FieldId.ToString());
-                    if (Directory.Exists(chunkDirectoryPath))
-                    {
-                        Directory.Delete(chunkDirectoryPath, true);
-                    }
-
+                    if (Directory.Exists(chunkDirectoryPath)) Directory.Delete(chunkDirectoryPath, true);
                     _receivedChunks.TryRemove(fileInfo.FieldId, out _);
+
+                    return new CompleteBatchResult { Success = true, Error = finalSha256 };
                 }
 
-                status.Status = "Completed";
-                _batchStore[batchId] = status;
                 _batchFilesMetadata.TryRemove(batchId, out _);
-
                 return new CompleteBatchResult { Success = true };
             }
             catch (Exception ex)
@@ -202,18 +152,13 @@ namespace FileTransfer.Server.BusinessLogic.Services
             }
         }
 
-        private string GetPartPath(Guid fileId, int chunkIndex)
-        {
-            return Path.Combine(Directory.GetCurrentDirectory(), "Uploads", fileId.ToString(), $"chunk_{chunkIndex}.part");
-        }
+        private string GetPartPath(Guid fileId, int chunkIndex) =>
+            Path.Combine(Directory.GetCurrentDirectory(), "Uploads", fileId.ToString(), $"chunk_{chunkIndex}.part");
 
         private void MarkReceived(Guid fileId, int chunkIndex)
         {
             var chunks = _receivedChunks.GetOrAdd(fileId, _ => new ConcurrentBag<int>());
-            if (!chunks.Contains(chunkIndex))
-            {
-                chunks.Add(chunkIndex);
-            }
+            if (!chunks.Contains(chunkIndex)) chunks.Add(chunkIndex);
         }
     }
 }
