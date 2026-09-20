@@ -1,5 +1,6 @@
 ﻿using FileTransfer.Server.BusinessLogic.Interfaces;
 using FileTransfer.Server.Models;
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 
@@ -9,16 +10,14 @@ namespace FileTransfer.Server.BusinessLogic.Services
     {
         private static readonly ConcurrentDictionary<Guid, ConcurrentBag<int>> _receivedChunks = new();
         private static readonly ConcurrentDictionary<Guid, BatchStatusResponse> _batchStore = new();
-
-        private class CachedFileMetadata
-        {
-            public Guid FieldId { get; set; }
-            public string FileName { get; set; } = string.Empty;
-            public int ChunkCount { get; set; }
-            public string DestinationFolder { get; set; } = string.Empty;
-        }
-
         private static readonly ConcurrentDictionary<Guid, List<CachedFileMetadata>> _batchFilesMetadata = new();
+
+        private readonly UploadSettings _settings;
+
+        public UploadsService(IOptions<UploadSettings> settings)
+        {
+            _settings = settings.Value;
+        }
 
         public async Task<bool> SaveChunkAsync(Guid fileId, int chunkIndex, Stream body, byte[] expectedMd5)
         {
@@ -45,9 +44,6 @@ namespace FileTransfer.Server.BusinessLogic.Services
             if (!actual.SequenceEqual(expectedMd5))
             {
                 if (File.Exists(tmp)) File.Delete(tmp);
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"[Server Error] MD5 mismatch detected for chunk {chunkIndex}. Requesting re-submission.");
-                Console.ResetColor();
                 return false;
             }
 
@@ -66,7 +62,9 @@ namespace FileTransfer.Server.BusinessLogic.Services
 
             foreach (var fileRequest in request.Files)
             {
-                int chunkCount = (int)Math.Ceiling((double)fileRequest.SizeBytes / fileRequest.ChunkSizeBytes);
+                int currentChunkSizeBytes = fileRequest.ChunkSizeBytes > 0 ? fileRequest.ChunkSizeBytes : _settings.DefaultChunkSize;
+
+                int chunkCount = (int)Math.Ceiling((double)fileRequest.SizeBytes / currentChunkSizeBytes);
                 if (chunkCount == 0) chunkCount = 1;
 
                 var fieldId = Guid.NewGuid();
@@ -75,7 +73,7 @@ namespace FileTransfer.Server.BusinessLogic.Services
                     FieldId = fieldId,
                     FileName = fileRequest.FileName,
                     ChunkCount = chunkCount,
-                    MaxParallelChunks = 4
+                    MaxParallelChunks = _settings.MaxParallelChunks
                 });
 
                 cachedMetadata.Add(new CachedFileMetadata
@@ -83,6 +81,7 @@ namespace FileTransfer.Server.BusinessLogic.Services
                     FieldId = fieldId,
                     FileName = fileRequest.FileName,
                     ChunkCount = chunkCount,
+                    ExpectedMd5Hex = fileRequest.Md5Hex?.ToLowerInvariant().Trim() ?? string.Empty,
                     DestinationFolder = request.DestinationFolder
                 });
             }
@@ -107,8 +106,17 @@ namespace FileTransfer.Server.BusinessLogic.Services
             {
                 foreach (var fileInfo in filesMetadata)
                 {
+                    if (!_receivedChunks.TryGetValue(fileInfo.FieldId, out var chunkList) || chunkList.Count < fileInfo.ChunkCount)
+                    {
+                        return new CompleteBatchResult
+                        {
+                            Success = false,
+                            Error = $"Cannot assemble '{fileInfo.FileName}'. Missing chunks. Received {chunkList?.Count ?? 0}/{fileInfo.ChunkCount}."
+                        };
+                    }
+
                     var targetFolder = string.IsNullOrWhiteSpace(fileInfo.DestinationFolder)
-                        ? Path.Combine(Directory.GetCurrentDirectory(), "CompletedUploads")
+                        ? Path.Combine(Directory.GetCurrentDirectory(), _settings.DefaultCompletedFolder)
                         : fileInfo.DestinationFolder;
 
                     Directory.CreateDirectory(targetFolder);
@@ -128,15 +136,18 @@ namespace FileTransfer.Server.BusinessLogic.Services
                         }
                     }
 
-                    string finalSha256;
-                    using (var shaEvaluator = SHA256.Create())
-                    using (var assembledReader = new FileStream(finalFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, true))
+                    string finalSha256 = "SHA256_VALIDATION_DISABLED";
+                    if (_settings.EnableMasterShaValidation)
                     {
-                        var rawBytes = await shaEvaluator.ComputeHashAsync(assembledReader);
-                        finalSha256 = BitConverter.ToString(rawBytes).Replace("-", "").ToLowerInvariant();
+                        using (var shaEvaluator = SHA256.Create())
+                        using (var assembledReader = new FileStream(finalFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, true))
+                        {
+                            var rawBytes = await shaEvaluator.ComputeHashAsync(assembledReader);
+                            finalSha256 = BitConverter.ToString(rawBytes).Replace("-", "").ToLowerInvariant();
+                        }
                     }
 
-                    var chunkDirectoryPath = Path.Combine(Directory.GetCurrentDirectory(), "Uploads", fileInfo.FieldId.ToString());
+                    var chunkDirectoryPath = Path.Combine(Directory.GetCurrentDirectory(), _settings.TemporaryUploadsFolder, fileInfo.FieldId.ToString());
                     if (Directory.Exists(chunkDirectoryPath)) Directory.Delete(chunkDirectoryPath, true);
                     _receivedChunks.TryRemove(fileInfo.FieldId, out _);
 
@@ -153,7 +164,7 @@ namespace FileTransfer.Server.BusinessLogic.Services
         }
 
         private string GetPartPath(Guid fileId, int chunkIndex) =>
-            Path.Combine(Directory.GetCurrentDirectory(), "Uploads", fileId.ToString(), $"chunk_{chunkIndex}.part");
+            Path.Combine(Directory.GetCurrentDirectory(), _settings.TemporaryUploadsFolder, fileId.ToString(), $"chunk_{chunkIndex}.part");
 
         private void MarkReceived(Guid fileId, int chunkIndex)
         {

@@ -1,30 +1,48 @@
-﻿using FileTransfer.Local;
+﻿using FileTransfer.Local.Client.Models;
+using Microsoft.Extensions.Configuration;
 
-namespace FileTransfer.ConsoleApp
+namespace FileTransfer.Local
 {
     class Program
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("=== Resumable Chunked Segment Hashing File Engine ===");
+            Console.WriteLine("=== FileTransfer Local Console Client ===");
 
-            Console.Write("Enter source file path (e.g. C:\\source\\large_file.bin): ");
-            string sourceFilePath = Console.ReadLine()?.Trim() ?? "";
+            var config = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .Build();
 
-            if (!File.Exists(sourceFilePath))
+            var settings = config.GetSection("ClientSettings").Get<ClientSettings>() ?? new ClientSettings();
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i].Equals("-folder", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    settings.SourceFolder = args[i + 1];
+                if (args[i].Equals("-destination", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    settings.DestinationFolder = args[i + 1];
+            }
+
+            if (string.IsNullOrWhiteSpace(settings.SourceFolder) || !Directory.Exists(settings.SourceFolder))
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[Error] Source file path could not be discovered.");
+                Console.WriteLine($"[Error] Configured Source folder directory path is invalid or empty: '{settings.SourceFolder}'");
                 Console.ResetColor();
                 return;
             }
 
-            Console.Write("Enter destination path (e.g. D:\\destination\\): ");
-            string destinationFolderPath = Console.ReadLine()?.Trim() ?? "";
+            string[] selectedFiles = Directory.GetFiles(settings.SourceFolder);
+            if (selectedFiles.Length == 0)
+            {
+                Console.WriteLine($"[Warning] No files discovered inside folder tracking target: '{settings.SourceFolder}'");
+                return;
+            }
 
-            int chunkSize = 2 * 1024 * 1024;
-            int maxConcurrencyStreams = 4;
-            string serverBaseUrl = "http://localhost:5092";
+            int absoluteChunkSizeBytes = settings.ChunkSizeMB * 1024 * 1024;
+
+            Console.WriteLine($"[Config Live] Target Server: {settings.ServerBaseUrl}");
+            Console.WriteLine($"[Config Live] Processing Slices: {settings.ChunkSizeMB} MB | Max Concurrency: {settings.MaxConcurrency} streams");
 
             var handler = new HttpClientHandler
             {
@@ -40,22 +58,26 @@ namespace FileTransfer.ConsoleApp
                 {
                     await transferEngine.UploadFilesWithVerificationAsync(
                         httpClient: httpClient,
-                        apiBase: serverBaseUrl,
-                        sourceFile: sourceFilePath,
-                        destinationDir: destinationFolderPath,
-                        chunkSize: chunkSize,
-                        maxParallel: maxConcurrencyStreams
+                        apiBase: settings.ServerBaseUrl,
+                        sourceFile: selectedFiles[0],
+                        destinationDir: settings.DestinationFolder,
+                        chunkSize: absoluteChunkSizeBytes,
+                        maxParallel: settings.MaxConcurrency
                     );
+
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("\n[Success] Local model-bound file operation executed successfully!");
+                    Console.ResetColor();
                 }
                 catch (Exception ex)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"\n[Critical Session Crash] Error: {ex.Message}");
+                    Console.WriteLine($"\n[Error] Pipeline failure encountered: {ex.Message}");
                     Console.ResetColor();
                 }
             }
 
-            Console.WriteLine("\nExecution cycle finished. Press any key to exit terms...");
+            Console.WriteLine("\nTask sequence complete. Press any key to release terminal window locks...");
             Console.ReadKey();
         }
     }
