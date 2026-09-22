@@ -1,6 +1,6 @@
 # FileTransfer
 
-The application was developed in accordance to "HS_Code Challenge_Backend .NET C#_File Transfer_OrangePDC" document specifications.
+The application was developed in accordance to document specifications.
 
 As a personal expansion, a FE component was included, developed with AngularJS based on VS's Angular template.
 
